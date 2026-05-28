@@ -35,6 +35,13 @@ LOG_LOCK = threading.Lock()
 ACTIVE_JOBS_LOCK = threading.Lock()
 ACTIVE_JOBS = 0
 SYSTEM_LOG_INTERVAL_SECONDS = 10
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_RED = "\033[31m"
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+ANSI_BLUE = "\033[34m"
+ANSI_CYAN = "\033[36m"
 
 
 @dataclass(frozen=True)
@@ -204,9 +211,42 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def print_status(message: str) -> None:
+def clock_timestamp() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def use_color() -> bool:
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def colorize(text: str, color: str, *, bold: bool = False) -> str:
+    if not use_color():
+        return text
+    prefix = ""
+    if bold:
+        prefix += ANSI_BOLD
+    prefix += color
+    return f"{prefix}{text}{ANSI_RESET}"
+
+
+def format_status(level: str, message: str) -> str:
+    level_styles = {
+        "INFO": (ANSI_BLUE, False),
+        "START": (ANSI_CYAN, True),
+        "OK": (ANSI_GREEN, True),
+        "WARN": (ANSI_YELLOW, True),
+        "FAIL": (ANSI_RED, True),
+        "ERROR": (ANSI_RED, True),
+        "SUMMARY": (ANSI_BLUE, True),
+    }
+    color, bold = level_styles.get(level, (ANSI_RESET, False))
+    label = colorize(f"[{level}]", color, bold=bold)
+    return f"{label} {message}"
+
+
+def print_status(level: str, message: str) -> None:
     with PRINT_LOCK:
-        print(message, flush=True)
+        print(format_status(level, message), flush=True)
 
 
 def log_event(log_file: Path | None, message: str) -> None:
@@ -318,7 +358,10 @@ def convert_one(task: ConversionTask, log_file: Path | None) -> ConversionResult
     if temp_output.exists():
         temp_output.unlink()
 
-    print_status(f"[{task.index}/{task.total}] START {task.source} -> {task.output}")
+    print_status(
+        "START",
+        f"{clock_timestamp()} [{task.index}/{task.total}] Encoding {task.source} -> {task.output}",
+    )
     log_event(
         log_file,
         f"job.start index={task.index} total={task.total} source={task.source} output={task.output}",
@@ -509,7 +552,7 @@ def main() -> int:
 
     removed_partials = cleanup_partial_outputs(destination_dir, log_file)
     if removed_partials > 0:
-        print_status(f"Removed {removed_partials} stale partial file(s)")
+        print_status("INFO", f"Removed {removed_partials} stale partial file(s)")
 
     discovery_started = time.monotonic()
     log_event(log_file, "preflight.begin")
@@ -524,14 +567,15 @@ def main() -> int:
     failures = len(preflight_errors)
 
     for error in preflight_errors:
-        print_status(f"ERROR: {error}")
+        print_status("ERROR", error)
 
     total_found = len(tasks) + len(preflight_errors) + skipped
     completed = skipped
 
     if total_found > 0:
         print_status(
-            f"Discovered {total_found} input file(s); {len(tasks)} scheduled, {skipped} skipped, {len(preflight_errors)} preflight error(s)"
+            "INFO",
+            f"Discovered {total_found} input file(s): {len(tasks)} scheduled, {skipped} skipped, {len(preflight_errors)} preflight error(s)",
         )
 
     stop_event = threading.Event()
@@ -565,15 +609,17 @@ def main() -> int:
             if result.success:
                 successes += 1
                 print_status(
-                    f"[done {completed}/{total_found}] OK   {result.task.output}"
+                    "OK",
+                    f"{clock_timestamp()} [done {completed}/{total_found}] Completed {result.task.output}",
                 )
             else:
                 failures += 1
                 print_status(
-                    f"[done {completed}/{total_found}] FAIL {result.task.source}"
+                    "FAIL",
+                    f"{clock_timestamp()} [done {completed}/{total_found}] Failed {result.task.source}",
                 )
                 if result.error_message:
-                    print_status(result.error_message)
+                    print_status("ERROR", result.error_message)
 
     stop_event.set()
     if log_file is not None:
@@ -586,13 +632,13 @@ def main() -> int:
     )
 
     print()
-    print("Summary")
-    print(f"Source directory: {source_dir}")
-    print(f"Destination directory: {destination_dir}")
-    print(f"Input files found: {total_found}")
-    print(f"Successful conversions: {successes}")
-    print(f"Skipped existing outputs: {skipped}")
-    print(f"Failed conversions: {failures}")
+    print_status("SUMMARY", "Summary")
+    print_status("SUMMARY", f"Source directory: {source_dir}")
+    print_status("SUMMARY", f"Destination directory: {destination_dir}")
+    print_status("SUMMARY", f"Input files found: {total_found}")
+    print_status("SUMMARY", f"Successful conversions: {successes}")
+    print_status("SUMMARY", f"Skipped existing outputs: {skipped}")
+    print_status("SUMMARY", f"Failed conversions: {failures}")
 
     return 0 if failures == 0 else 1
 
