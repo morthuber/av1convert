@@ -39,7 +39,7 @@ The script processes video files found recursively under the source directory.
 
 A file is considered an input video if:
 - it has one of the configured video filename extensions, and
-- FFmpeg can open it successfully
+- `ffprobe` can read it successfully and report at least one video stream
 
 The initial supported extensions are:
 
@@ -53,6 +53,8 @@ The initial supported extensions are:
 - `.m4v`
 
 Extension matching is case-insensitive.
+
+Input validation during preflight is metadata-based and should use `ffprobe`, not a full decode pass.
 
 ## Output files
 

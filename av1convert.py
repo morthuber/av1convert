@@ -108,20 +108,16 @@ def iter_input_files(source_dir: Path) -> Iterable[Path]:
             yield path
 
 
-def can_ffmpeg_open(path: Path) -> bool:
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        str(path),
-        "-f",
-        "null",
-        "-",
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return result.returncode == 0
+def input_probe_ok(path: Path) -> bool:
+    metadata = ffprobe_json(path)
+    if metadata is None:
+        return False
+
+    streams = metadata.get("streams") or []
+    return any(
+        isinstance(stream, dict) and stream.get("codec_type") == "video"
+        for stream in streams
+    )
 
 
 def build_tasks(
@@ -132,8 +128,10 @@ def build_tasks(
     errors: list[str] = []
 
     for source_path in iter_input_files(source_dir):
-        if not can_ffmpeg_open(source_path):
-            errors.append(f"Unreadable by FFmpeg: {source_path}")
+        if not input_probe_ok(source_path):
+            errors.append(
+                f"Unreadable by ffprobe or missing video stream: {source_path}"
+            )
             continue
 
         relative = source_path.relative_to(source_dir)
