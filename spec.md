@@ -147,7 +147,9 @@ If validation fails, the file is treated as a failed conversion and must be repo
 
 For the initial version:
 
-- existing output files are overwritten
+- stale partial output files ending in `.part` are removed at startup before conversion begins
+- if the final output file already exists and passes output validation, that file is treated as already completed and is skipped
+- if the final output file already exists but fails output validation, it is removed and re-created
 - if two different source files map to the same output path after normalization, that is treated as an error for those files and must be reported in the summary
 
 ## Summary and exit status

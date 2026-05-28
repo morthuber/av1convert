@@ -120,12 +120,27 @@ def input_probe_ok(path: Path) -> bool:
     )
 
 
+def cleanup_partial_outputs(destination_dir: Path, log_file: Path | None) -> int:
+    removed = 0
+    if not destination_dir.exists():
+        return removed
+
+    for partial_path in destination_dir.rglob("*.part"):
+        if partial_path.is_file():
+            partial_path.unlink()
+            removed += 1
+            log_event(log_file, f"cleanup.partial_removed path={partial_path}")
+
+    return removed
+
+
 def build_tasks(
-    source_dir: Path, destination_dir: Path
-) -> tuple[list[ConversionTask], list[str]]:
+    source_dir: Path, destination_dir: Path, log_file: Path | None
+) -> tuple[list[ConversionTask], list[str], int]:
     tasks: list[ConversionTask] = []
     task_collisions: dict[Path, Path] = {}
     errors: list[str] = []
+    skipped = 0
 
     for source_path in iter_input_files(source_dir):
         if not input_probe_ok(source_path):
@@ -146,6 +161,23 @@ def build_tasks(
             continue
 
         task_collisions[output_path] = source_path
+
+        if output_path.exists():
+            validation_error = validate_output(output_path)
+            if validation_error is None:
+                skipped += 1
+                log_event(
+                    log_file,
+                    f"preflight.skip_existing source={source_path} output={output_path}",
+                )
+                continue
+
+            output_path.unlink()
+            log_event(
+                log_file,
+                f"preflight.remove_invalid_output output={output_path} reason={validation_error!r}",
+            )
+
         tasks.append(
             ConversionTask(index=0, total=0, source=source_path, output=output_path)
         )
@@ -156,7 +188,7 @@ def build_tasks(
         for i, task in enumerate(tasks, start=1)
     ]
 
-    return numbered_tasks, errors
+    return numbered_tasks, errors, skipped
 
 
 def utc_timestamp() -> str:
@@ -437,12 +469,18 @@ def main() -> int:
 
     destination_dir.mkdir(parents=True, exist_ok=True)
 
+    removed_partials = cleanup_partial_outputs(destination_dir, log_file)
+    if removed_partials > 0:
+        print_status(f"Removed {removed_partials} stale partial file(s)")
+
     discovery_started = time.monotonic()
     log_event(log_file, "preflight.begin")
-    tasks, preflight_errors = build_tasks(source_dir, destination_dir)
+    tasks, preflight_errors, skipped = build_tasks(
+        source_dir, destination_dir, log_file
+    )
     log_event(
         log_file,
-        f"preflight.end scheduled={len(tasks)} errors={len(preflight_errors)} elapsed={time.monotonic() - discovery_started:.2f}",
+        f"preflight.end scheduled={len(tasks)} skipped={skipped} errors={len(preflight_errors)} partials_removed={removed_partials} elapsed={time.monotonic() - discovery_started:.2f}",
     )
     successes = 0
     failures = len(preflight_errors)
@@ -450,12 +488,12 @@ def main() -> int:
     for error in preflight_errors:
         print_status(f"ERROR: {error}")
 
-    total_found = len(tasks) + len(preflight_errors)
-    completed = 0
+    total_found = len(tasks) + len(preflight_errors) + skipped
+    completed = skipped
 
     if total_found > 0:
         print_status(
-            f"Discovered {total_found} input file(s); {len(tasks)} scheduled, {len(preflight_errors)} preflight error(s)"
+            f"Discovered {total_found} input file(s); {len(tasks)} scheduled, {skipped} skipped, {len(preflight_errors)} preflight error(s)"
         )
 
     stop_event = threading.Event()
@@ -494,7 +532,7 @@ def main() -> int:
     total_elapsed = time.monotonic() - started_at
     log_event(
         log_file,
-        f"summary total_found={total_found} successes={successes} failures={failures} elapsed={total_elapsed:.2f}",
+        f"summary total_found={total_found} successes={successes} skipped={skipped} failures={failures} elapsed={total_elapsed:.2f}",
     )
 
     print()
@@ -503,6 +541,7 @@ def main() -> int:
     print(f"Destination directory: {destination_dir}")
     print(f"Input files found: {total_found}")
     print(f"Successful conversions: {successes}")
+    print(f"Skipped existing outputs: {skipped}")
     print(f"Failed conversions: {failures}")
 
     return 0 if failures == 0 else 1
