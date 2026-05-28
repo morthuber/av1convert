@@ -7,7 +7,7 @@
 The script is called with exactly one argument: the source directory.
 
 ```sh
-av1convert.sh SOURCE_DIR
+av1convert.py SOURCE_DIR [--jobs N] [--log-file PATH]
 ```
 
 If the source directory contains spaces or other shell-special characters, it must be quoted by the caller.
@@ -99,6 +99,19 @@ Examples:
 - `trip_H265_final.mp4` -> `trip_final.mkv`
 - `myh264test.mp4` -> `myh264test.mkv`
 
+## Logging
+
+Logging is optional.
+
+If a log file path is provided, the script writes timestamped log entries including:
+
+- script start settings
+- preflight start and end times
+- per-job start and end times
+- per-job elapsed time and failure reason, if any
+- periodic system snapshots during conversion, including load average, available memory, and number of active jobs
+- final summary totals and overall elapsed time
+
 ## Conversion behavior
 
 For each input file:
@@ -107,12 +120,26 @@ For each input file:
 - the output extension is `.mkv`
 - the script should avoid leaving partial output files behind if conversion fails
 - the process runs at a lower-than-default CPU scheduling priority so interactive desktop use stays responsive while conversion runs in the background
+- the default number of parallel jobs is half the number of CPU cores, rounded down, with a minimum of 1
 
 The default FFmpeg progress output should not be shown during normal operation.
 
 The script may print one concise status line per file.
 
 FFmpeg error output should be shown for failed files.
+
+## Output validation
+
+After each conversion completes, the output file is validated.
+
+For the initial version, validation must check all of the following:
+
+- the output file exists
+- the output file size is greater than zero
+- `ffprobe` reports a duration greater than zero
+- `ffprobe` reports at least one video stream
+
+If validation fails, the file is treated as a failed conversion and must be reported in the summary.
 
 ## Existing files and conflicts
 
