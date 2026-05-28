@@ -25,13 +25,14 @@ For further thoughts on what went into making this script, see spec.md.
 ## Usage
 
 ```sh
-python3 av1convert.py SOURCE_DIR [--jobs N]
+python3 av1convert.py SOURCE_DIR [--jobs N] [--log-file PATH]
 ```
 
 ## Options
 
 - `SOURCE_DIR` (required): source directory containing video files
-- `--jobs N` (default: number of CPU cores): number of parallel FFmpeg jobs
+- `--jobs N` (default: half the number of CPU cores, minimum 1): number of parallel FFmpeg jobs
+- `--log-file PATH` (default: disabled): write timestamped progress and system information to a log file
 
 Examples:
 
@@ -50,4 +51,6 @@ python3 av1convert.py testvideo --jobs 4
 - preserves the relative directory structure
 - converts supported video files to `.mkv` with AV1 video
 - removes codec tags such as `h264`, `x264`, `h265`, `x265`, `hevc`, and `avc` from filename stems
+- skips already valid finished outputs when re-run
+- removes stale `.part` files on startup
 - prints one status line per file and a final summary

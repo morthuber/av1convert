@@ -4,7 +4,7 @@
 
 ## Invocation
 
-The script is called with exactly one argument: the source directory.
+The script is called with a required source directory argument and optional flags.
 
 ```sh
 av1convert.py SOURCE_DIR [--jobs N] [--log-file PATH]
@@ -15,8 +15,8 @@ If the source directory contains spaces or other shell-special characters, it mu
 Examples:
 
 ```sh
-av1convert.sh 2021/
-av1convert.sh "/mnt/media/videos/year 2021/"
+av1convert.py 2021/
+av1convert.py "/mnt/media/videos/year 2021/"
 ```
 
 ## Source and destination directories
@@ -123,12 +123,17 @@ For each input file:
 - the script should avoid leaving partial output files behind if conversion fails
 - the process runs at a lower-than-default CPU scheduling priority so interactive desktop use stays responsive while conversion runs in the background
 - the default number of parallel jobs is half the number of CPU cores, rounded down, with a minimum of 1
+- all streams are mapped from the input
+- subtitle streams are copied when possible
+- unexpected worker failures should be treated as per-file conversion failures so the overall run can continue
 
 The default FFmpeg progress output should not be shown during normal operation.
 
 The script may print one concise status line per file.
 
 FFmpeg error output should be shown for failed files.
+
+If copying all mapped streams directly would fail for a particular file, the implementation may retry with a more conservative stream mapping that keeps the video stream and any available audio streams.
 
 ## Output validation
 
@@ -150,6 +155,7 @@ For the initial version:
 - stale partial output files ending in `.part` are removed at startup before conversion begins
 - if the final output file already exists and passes output validation, that file is treated as already completed and is skipped
 - if the final output file already exists but fails output validation, it is removed and re-created
+- when removing stale or invalid outputs, only regular files are deleted automatically
 - if two different source files map to the same output path after normalization, that is treated as an error for those files and must be reported in the summary
 
 ## Summary and exit status

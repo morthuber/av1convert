@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import json
 import os
 import re
 import shutil
@@ -120,6 +121,15 @@ def input_probe_ok(path: Path) -> bool:
     )
 
 
+def safe_remove_file(path: Path, log_file: Path | None, reason: str) -> None:
+    if not path.exists():
+        return
+    if not path.is_file():
+        raise RuntimeError(f"Refusing to remove non-regular file: {path}")
+    path.unlink()
+    log_event(log_file, f"file.removed path={path} reason={reason}")
+
+
 def cleanup_partial_outputs(destination_dir: Path, log_file: Path | None) -> int:
     removed = 0
     if not destination_dir.exists():
@@ -127,9 +137,8 @@ def cleanup_partial_outputs(destination_dir: Path, log_file: Path | None) -> int
 
     for partial_path in destination_dir.rglob("*.part"):
         if partial_path.is_file():
-            partial_path.unlink()
+            safe_remove_file(partial_path, log_file, "startup_partial_cleanup")
             removed += 1
-            log_event(log_file, f"cleanup.partial_removed path={partial_path}")
 
     return removed
 
@@ -172,10 +181,10 @@ def build_tasks(
                 )
                 continue
 
-            output_path.unlink()
-            log_event(
+            safe_remove_file(
+                output_path,
                 log_file,
-                f"preflight.remove_invalid_output output={output_path} reason={validation_error!r}",
+                f"invalid_existing_output:{validation_error}",
             )
 
         tasks.append(
@@ -254,7 +263,7 @@ def system_log_worker(stop_event: threading.Event, log_file: Path | None) -> Non
         log_event(log_file, f"system {load_part} {mem_part} active_jobs={active_jobs}")
 
 
-def ffmpeg_command(source: Path, destination_tmp: Path) -> list[str]:
+def ffmpeg_base_command(source: Path, destination_tmp: Path) -> list[str]:
     return [
         "ffmpeg",
         "-hide_banner",
@@ -263,8 +272,6 @@ def ffmpeg_command(source: Path, destination_tmp: Path) -> list[str]:
         "-y",
         "-i",
         str(source),
-        "-map",
-        "0",
         "-c:v",
         "libsvtav1",
         "-crf",
@@ -279,11 +286,27 @@ def ffmpeg_command(source: Path, destination_tmp: Path) -> list[str]:
         "aac",
         "-b:a",
         "192k",
-        "-c:s",
-        "copy",
         "-f",
         "matroska",
         str(destination_tmp),
+    ]
+
+
+def ffmpeg_command(source: Path, destination_tmp: Path) -> list[str]:
+    return ffmpeg_base_command(source, destination_tmp) + [
+        "-map",
+        "0",
+        "-c:s",
+        "copy",
+    ]
+
+
+def ffmpeg_fallback_command(source: Path, destination_tmp: Path) -> list[str]:
+    return ffmpeg_base_command(source, destination_tmp) + [
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
     ]
 
 
@@ -312,28 +335,45 @@ def convert_one(task: ConversionTask, log_file: Path | None) -> ConversionResult
 
         if result.returncode != 0:
             if temp_output.exists():
-                temp_output.unlink()
-            error = (
+                safe_remove_file(temp_output, log_file, "failed_primary_encode")
+            primary_error = (
                 result.stderr.strip() or f"ffmpeg exited with code {result.returncode}"
             )
-            elapsed_seconds = time.monotonic() - started_at
             log_event(
                 log_file,
-                f"job.end index={task.index} status=fail elapsed={elapsed_seconds:.2f} reason={error!r}",
+                f"job.retry_fallback index={task.index} reason={primary_error!r}",
             )
-            return ConversionResult(
-                task=task,
-                success=False,
-                error_message=error,
-                elapsed_seconds=elapsed_seconds,
+            result = subprocess.run(
+                ffmpeg_fallback_command(task.source, temp_output),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
             )
+            if result.returncode != 0:
+                if temp_output.exists():
+                    safe_remove_file(temp_output, log_file, "failed_fallback_encode")
+                error = (
+                    result.stderr.strip()
+                    or f"ffmpeg exited with code {result.returncode}"
+                )
+                elapsed_seconds = time.monotonic() - started_at
+                log_event(
+                    log_file,
+                    f"job.end index={task.index} status=fail elapsed={elapsed_seconds:.2f} reason={error!r}",
+                )
+                return ConversionResult(
+                    task=task,
+                    success=False,
+                    error_message=error,
+                    elapsed_seconds=elapsed_seconds,
+                )
 
         temp_output.replace(task.output)
 
         validation_error = validate_output(task.output)
         if validation_error is not None:
             if task.output.exists():
-                task.output.unlink()
+                safe_remove_file(task.output, log_file, "failed_output_validation")
             elapsed_seconds = time.monotonic() - started_at
             log_event(
                 log_file,
@@ -356,7 +396,7 @@ def convert_one(task: ConversionTask, log_file: Path | None) -> ConversionResult
         )
     except Exception as exc:
         if temp_output.exists():
-            temp_output.unlink()
+            safe_remove_file(temp_output, log_file, "conversion_exception_cleanup")
         elapsed_seconds = time.monotonic() - started_at
         log_event(
             log_file,
@@ -389,8 +429,6 @@ def ffprobe_json(path: Path) -> dict | None:
     if result.returncode != 0:
         return None
     try:
-        import json
-
         return json.loads(result.stdout)
     except Exception:
         return None
@@ -510,7 +548,19 @@ def main() -> int:
             executor.submit(convert_one, task, log_file): task for task in tasks
         }
         for future in concurrent.futures.as_completed(future_to_task):
-            result = future.result()
+            task = future_to_task[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = ConversionResult(
+                    task=task,
+                    success=False,
+                    error_message=f"unexpected worker failure: {exc}",
+                )
+                log_event(
+                    log_file,
+                    f"job.end index={task.index} status=fail reason={str(exc)!r}",
+                )
             completed += 1
             if result.success:
                 successes += 1
